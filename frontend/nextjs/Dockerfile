@@ -1,19 +1,19 @@
 ###############################################
 # 1) Dependencies layer
 ###############################################
-FROM node:18.17.0-alpine AS deps
+FROM node:22.13.0-alpine AS deps
 WORKDIR /app
 
 # Copy only package manifest first for better layer caching
 COPY package.json ./
 
 # Install dependencies (no lock file present – recommend adding one for reproducibility)
-RUN npm install --legacy-peer-deps
+RUN npm install --legacy-peer-deps --fetch-retries=5 --fetch-timeout=600000
 
 ###############################################
 # 2) Builder layer – builds Next.js (.next)
 ###############################################
-FROM node:18.17.0-alpine AS builder
+FROM node:22.13.0-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -24,7 +24,7 @@ RUN npm run build \
 ###############################################
 # 3) Runner layer – production image serving Next.js
 ###############################################
-FROM node:18.17.0-alpine AS runner
+FROM node:22.13.0-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 

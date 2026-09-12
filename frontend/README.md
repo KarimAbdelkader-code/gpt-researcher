@@ -32,7 +32,7 @@ https://github.com/assafelovic/gpt-researcher/assets/13554167/dd6cf08f-b31e-40c6
 A more robust solution with enhanced features and performance.
 
 #### Prerequisites
-- Node.js (v18.17.0 recommended)
+- Node.js (v22.13.0 recommended)
 - npm
 
 #### Setup and Running
@@ -44,8 +44,8 @@ A more robust solution with enhanced features and performance.
 
 2. Set up Node.js:
    ```
-   nvm install 18.17.0
-   nvm use v18.17.0
+   nvm install 22.13.0
+   nvm use v22.13.0
    ```
 
 3. Install dependencies:
