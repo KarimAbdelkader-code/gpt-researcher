@@ -1,8 +1,7 @@
-import os
 import requests
-import tempfile
 from urllib.parse import urlparse
-from langchain_community.document_loaders import PyMuPDFLoader
+
+from .page_router import PageRouter
 
 
 class PyMuPDFScraper:
@@ -33,8 +32,8 @@ class PyMuPDFScraper:
 
     def scrape(self) -> tuple[str, list[str], str]:
         """
-        The `scrape` function uses PyMuPDFLoader to load a document from the provided link (either URL or local file)
-        and returns the document as a string.
+        Load a PDF from the provided link or local path and route its pages to
+        the lightest parser that can preserve their content.
 
         Returns:
           str: A string representation of the loaded document.
@@ -53,31 +52,14 @@ class PyMuPDFScraper:
                     response = http.get(self.link, timeout=(5, 30), stream=True, verify=False)
                     response.raise_for_status()
 
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
-                    temp_filename = temp_file.name  # Get the temporary file name
-                    for chunk in response.iter_content(chunk_size=8192):
-                        temp_file.write(chunk)  # Write the downloaded content to the temporary file
-
-                # Always clean up the downloaded temp file, even if loading fails
-                # (PyMuPDFLoader.load() can raise on a malformed/partial PDF).
-                try:
-                    loader = PyMuPDFLoader(temp_filename)
-                    doc = loader.load()
-                finally:
-                    try:
-                        os.remove(temp_filename)
-                    except OSError:
-                        pass
+                pdf_bytes = b"".join(response.iter_content(chunk_size=8192))
             else:
-                loader = PyMuPDFLoader(self.link)
-                doc = loader.load()
+                with open(self.link, "rb") as pdf_file:
+                    pdf_bytes = pdf_file.read()
 
-            # Extract the content, image (if any), and title from the document.
-            image = []
-            # Retrieve content from ALL pages to ensure PDFs with cover pages pass validation.
-            content = "\n".join(page.page_content for page in doc)
-            title = doc[0].metadata.get("title", "") if doc else ""
-            return content, image, title
+            router = PageRouter(pdf_bytes, str(self.link))
+            content = router.parse()
+            return content, [], router.title
 
         except requests.exceptions.Timeout:
             print(f"Download timed out. Please check the link : {self.link}")

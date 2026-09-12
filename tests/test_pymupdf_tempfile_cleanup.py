@@ -1,50 +1,112 @@
-"""Regression test: PyMuPDFScraper must not leak its downloaded temp file.
+from unittest.mock import Mock, call, patch
 
-When scraping a remote PDF, the scraper downloads it to a
-``NamedTemporaryFile(delete=False, suffix=".pdf")`` and then loads it with
-``PyMuPDFLoader``. The old code called ``os.remove(temp_filename)`` only on the
-success path, so a parse failure (malformed/partial PDF -> ``PyMuPDFLoader.load``
-raises) left the temp file behind on disk every time. The exception is then
-swallowed by the broad ``except``, so the leak was silent.
-"""
-
-import os
-import glob
-import tempfile
-from unittest.mock import MagicMock, patch
+import requests
 
 from gpt_researcher.scraper.pymupdf.pymupdf import PyMuPDFScraper
 
 
 class _FakeResponse:
+    def __init__(self, chunks=(b"%PDF", b" body")):
+        self._chunks = chunks
+
     def raise_for_status(self):
         return None
 
     def iter_content(self, chunk_size=8192):
-        yield b"%PDF-1.4 not-a-real-pdf"
+        assert chunk_size == 8192
+        yield from self._chunks
 
 
-def _temp_pdfs() -> set:
-    return set(glob.glob(os.path.join(tempfile.gettempdir(), "*.pdf")))
+def _mock_router(content="content", title="title"):
+    router = Mock()
+    router.parse.return_value = content
+    router.title = title
+    return router
 
 
-def test_tempfile_removed_when_loader_raises():
-    scraper = PyMuPDFScraper("https://example.com/broken.pdf")
-
-    before = _temp_pdfs()
+def test_remote_pdf_uses_session_and_preserves_tuple():
+    session = Mock()
+    session.get.return_value = _FakeResponse()
+    router = _mock_router()
 
     with patch(
-        "gpt_researcher.scraper.pymupdf.pymupdf.requests.get",
-        return_value=_FakeResponse(),
-    ), patch(
-        "gpt_researcher.scraper.pymupdf.pymupdf.PyMuPDFLoader"
-    ) as mock_loader:
-        mock_loader.return_value.load.side_effect = RuntimeError("corrupt PDF")
+        "gpt_researcher.scraper.pymupdf.pymupdf.PageRouter", return_value=router
+    ) as router_class:
+        result = PyMuPDFScraper("https://example.com/file.pdf", session).scrape()
 
-        content, images, title = scraper.scrape()
+    assert result == ("content", [], "title")
+    session.get.assert_called_once_with(
+        "https://example.com/file.pdf", timeout=(5, 30), stream=True
+    )
+    router_class.assert_called_once_with(b"%PDF body", "https://example.com/file.pdf")
 
-    # Broad except still yields the empty-result contract...
-    assert (content, images, title) == ("", [], "")
-    # ...but no new *.pdf temp file is left behind.
-    leaked = _temp_pdfs() - before
-    assert not leaked, f"PyMuPDFScraper leaked temp file(s): {leaked}"
+
+def test_ssl_failure_retries_without_verification():
+    session = Mock()
+    session.get.side_effect = [requests.exceptions.SSLError(), _FakeResponse()]
+
+    with patch(
+        "gpt_researcher.scraper.pymupdf.pymupdf.PageRouter",
+        return_value=_mock_router(),
+    ):
+        result = PyMuPDFScraper("https://example.com/file.pdf", session).scrape()
+
+    assert result == ("content", [], "title")
+    assert session.get.call_args_list == [
+        call("https://example.com/file.pdf", timeout=(5, 30), stream=True),
+        call(
+            "https://example.com/file.pdf",
+            timeout=(5, 30),
+            stream=True,
+            verify=False,
+        ),
+    ]
+
+
+def test_download_timeout_preserves_failure_tuple():
+    session = Mock()
+    session.get.side_effect = requests.exceptions.Timeout()
+
+    assert PyMuPDFScraper("https://example.com/file.pdf", session).scrape() == (
+        "",
+        [],
+        "",
+    )
+
+
+def test_local_pdf_becomes_bytes(tmp_path):
+    pdf_path = tmp_path / "file.pdf"
+    pdf_path.write_bytes(b"local PDF")
+
+    with patch(
+        "gpt_researcher.scraper.pymupdf.pymupdf.PageRouter",
+        return_value=_mock_router(),
+    ) as router_class:
+        result = PyMuPDFScraper(str(pdf_path)).scrape()
+
+    assert result == ("content", [], "title")
+    router_class.assert_called_once_with(b"local PDF", str(pdf_path))
+
+
+def test_empty_router_result_preserves_total_failure_tuple(tmp_path):
+    path = tmp_path / "local.pdf"
+    path.write_bytes(b"PDF")
+    with patch(
+        "gpt_researcher.scraper.pymupdf.pymupdf.PageRouter",
+        return_value=_mock_router(content="", title=""),
+    ) as router_class:
+        result = PyMuPDFScraper(str(path)).scrape()
+
+    assert result == ("", [], "")
+    router_class.assert_called_once_with(b"PDF", str(path))
+
+
+def test_blank_document_preserves_metadata(tmp_path):
+    path = tmp_path / "blank.pdf"
+    path.write_bytes(b"PDF")
+    with patch(
+        "gpt_researcher.scraper.pymupdf.pymupdf.PageRouter",
+        return_value=_mock_router(content="", title="Blank title"),
+    ) as router_class:
+        assert PyMuPDFScraper(str(path)).scrape() == ("", [], "Blank title")
+    router_class.assert_called_once()
