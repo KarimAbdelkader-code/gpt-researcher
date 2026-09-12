@@ -54,5 +54,4 @@ CURSOR_RULES.md
 /.claude/worktrees/
 /.history
 graphify-out/
-pdf-router-fixtures/
 gpt-researcher-*
